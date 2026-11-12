@@ -1,0 +1,37 @@
+{
+  "name": "@azulores/de-corrector",
+  "version": "0.1.2",
+  "description": "中文「的/地/得」纠错：纯 JS + ONNX，无需 Python，无需联网，无需词典配置",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src",
+    "assets"
+  ],
+  "keywords": [
+    "chinese",
+    "nlp",
+    "pos",
+    "de-correction",
+    "的地得",
+    "onnx"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "onnxruntime-web": "^1.20.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yiyikneesocks/de-corrector.git"
+  },
+  "homepage": "https://github.com/yiyikneesocks/de-corrector#readme",
+  "bugs": {
+    "url": "https://github.com/yiyikneesocks/de-corrector/issues"
+  }
+}
