@@ -1,6 +1,6 @@
 {
   "name": "@azulores/de-corrector",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "description": "中文「的/地/得」纠错：纯 JS + ONNX，无需 Python，无需联网，无需词典配置",
   "type": "module",
   "main": "src/index.js",

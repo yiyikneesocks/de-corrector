@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { DeCorrector, hasRealContent, isNoise, isMention } from '../src/index.js'
+import { DeCorrector, hasRealContent, isNoise, isMention, chunkBySentence } from '../src/index.js'
 
 const c = new DeCorrector()
 await c.warmup()
@@ -84,11 +84,91 @@ test('非 UTF-16 边界：emoji 不破坏偏移', async () => {
   assert.equal(await c.fix(s), '😀他慢慢地走过来🎉')
 })
 
-test('超长文本直接跳过', async () => {
-  const long = '他慢慢的走过来。'.repeat(100) // 800 字 > default 500
-  const short = new DeCorrector({ maxLength: 10 })
-  await short.warmup()
-  assert.equal(await short.fix(long), long)
+// ────────────────────────────────────────────────────────────
+// 长消息分块（chunking）— 0.2.0
+// 旧语义：maxLength 是「全文上限」，超长整条丢弃（生产事故根源）。
+// 新语义：maxLength 是「单块上限」，超长自动分块；全文熔断用 maxTotalLength。
+// ────────────────────────────────────────────────────────────
+test('全文熔断：超 maxTotalLength 直接跳过', async () => {
+  const long = '他慢慢的走过来。'.repeat(100) // 800 字
+  const capped = new DeCorrector({ maxTotalLength: 300 })
+  await capped.warmup()
+  assert.equal(await capped.fix(long), long)
+})
+
+test('长文分块：超过单块上限不再丢弃（800 字）', async () => {
+  const long = '他慢慢的走过来。'.repeat(100)
+  const expect = '他慢慢地走过来。'.repeat(100)
+  assert.equal(await c.fix(long), expect)
+})
+
+test('分块可观测：chunkInfo + onChunk', async () => {
+  const long = '他慢慢的走过来。'.repeat(100)
+  const seen = []
+  const cc = new DeCorrector({ onChunk: (info) => seen.push(info) })
+  await cc.warmup()
+  const r = await cc.check(long)
+  assert.ok(r.chunkInfo, '应带 chunkInfo')
+  assert.ok(r.chunkInfo.chunks.length >= 2, '800 字应至少分 2 块')
+  assert.equal(seen.length, 1)
+  assert.equal(seen[0].processed, r.chunkInfo.processed)
+  assert.equal(seen[0].total, 800)
+})
+
+test('maxChunks：超出部分原样保留，不丢文本', async () => {
+  const long = '他慢慢的走过来。'.repeat(100)
+  const cc = new DeCorrector({ maxLength: 100, maxChunks: 1 })
+  await cc.warmup()
+  const r = await cc.check(long)
+  assert.equal([...r.corrected].length, [...long].length)
+  assert.ok(r.corrected.startsWith('他慢慢地走过来。'), '首块应被纠错')
+  assert.ok(r.corrected.includes('他慢慢的走过来。'), '跳过块应原样保留')
+  assert.equal(r.chunkInfo.skipped, r.chunkInfo.chunks.length - 1)
+})
+
+test('分块不破坏占位符（<at .../>）', async () => {
+  // 无标点长串，强制硬切；切点必须避开占位符内部
+  const ph = '<at id="12345"/>'
+  const chars = [...('a'.repeat(50) + ph + 'b'.repeat(50))]
+  const phStart = 50
+  const phEnd = 50 + [...ph].length
+  const ranges = chunkBySentence(chars, 55)
+  for (const [, end] of ranges) {
+    assert.ok(!(end > phStart && end < phEnd), `切点 ${end} 落在占位符内部`)
+  }
+})
+
+// 生产 503 字样本（NapCat 2026-11-12_17-10-42.737.log:1121，群 862760462）
+// 事故：maxLength=500 守卫静默丢弃整条。chunking 后应分 2 块、不丢字、
+// 且只改「忍不住的→忍不住地」；「真的/不由得」被冻结词保护。
+const SAMPLE_503 = '谈及zaka和Faker在中上联动的区别，这位不苟言辞的选手哈哈大笑了起来:“这太难了哥们儿，太难了。你要知道zaka拥有无可比拟的操作，他是一头猎豹随时准备单杀你。而Faker有更好的大局意识和节奏意识，他可以指挥我完成各种中野联动，真的很难分出胜负。但是我想，Faker是一个天生的赢家，他之前也赢了很多S赛，你知道的哥们儿他一直在赢，他永远都在找机会，这会带动你一起与他努力和疯狂，有无与伦比的魅力，让你忍不住的和他一起战斗，跟随着他，这感觉真的太美妙了。”\n谈及peyz，zeus选手也是赞誉有加：“你知道的，gumayusi有时候打的风格偏激进，当然哥们你知道的这并不是不好，而是我更喜欢有稳健性的打法，是的，peyz就是这样，他的AD你BAN不完，天哪，他在赛场上面永远保持竞争心和强烈的胜负心，这样的氛围让我也不由得跟随他完成许多几乎不可能的操作，打赢三打五这样劣势团战，是的，这是之前在韩华未曾有过的体验。”\n而在被问及怎么面对支持韩华和他的粉丝时，zeus选手也是异常坚定：“你知道的，我为韩华带来了联赛冠军和MSI，但是我的职业生涯在三星的职业生涯也到此结束了，现在我更倾向于展望...'
+
+test('503 字生产样本：分 2 块、不丢字、不误改冻结词', async () => {
+  const r = await c.check(SAMPLE_503)
+  assert.equal([...SAMPLE_503].length, 503)
+  assert.equal([...r.corrected].length, [...SAMPLE_503].length, '长度必须一致')
+  assert.ok(r.chunkInfo && r.chunkInfo.chunks.length === 2, '应分 2 块')
+  assert.equal(r.chunkInfo.skipped, 0)
+  assert.equal(r.changes.length, 1)
+  assert.deepEqual(
+    { index: r.changes[0].index, from: r.changes[0].from, to: r.changes[0].to },
+    { index: 208, from: '的', to: '地' },
+  )
+  assert.ok(!r.corrected.includes('真地'), '真的 不应被改')
+  assert.ok(!r.corrected.includes('不由地'), '不由得 不应被改')
+})
+
+test('分块边界：纯中文 / 混拉丁 / 单句硬切 均不丢字', async () => {
+  const cases = [
+    '他慢慢的走过来，我们高兴的唱着歌。'.repeat(31),
+    'zaka和Faker在中上联动，他高兴的跑过来。'.repeat(23),
+    '他慢慢的走过来'.repeat(90) + '。',
+  ]
+  for (const text of cases) {
+    const r = await c.check(text)
+    assert.equal([...r.corrected].length, [...text].length)
+    assert.ok(r.chunkInfo && r.chunkInfo.chunks.length >= 2)
+  }
 })
 
 test('并发安全', async () => {
@@ -209,4 +289,54 @@ test('程度补语保护：名词化的的 / 及物动词 不误改', async () =
   // 「打的」= 打的内容/表现，是合法名词，不能改
   assert.equal(await c.fix('他打的就是好'), '他打的就是好')
   assert.equal(await c.fix('他写的就是好'), '他写的就是好')
+})
+
+// ────────────────────────────────────────────────────────────
+// DER 解冻 — M2 回归（生产漏纠 2026-11-13）
+// 模型给出 DER（明确补语判定）时，冻结词护栏让路；
+// 其余标签（taxi 义「打的回家」= AS、构词义「值得」= VV 等）仍冻结。
+// ────────────────────────────────────────────────────────────
+test('DER 解冻：打的好啊 → 打得好啊', async () => {
+  assert.equal(await c.fix('打的好啊'), '打得好啊')
+  assert.equal(await c.fix('他打的很好'), '他打得很好')
+})
+
+test('DER 解冻不伤冻结词：taxi/构词义不动', async () => {
+  assert.equal(await c.fix('他打的回家'), '他打的回家')
+  assert.equal(await c.fix('这本书值得买'), '这本书值得买')
+  assert.equal(await c.fix('他懂得多'), '他懂得多')
+  assert.equal(await c.fix('他总得去一趟'), '他总得去一趟')
+  assert.equal(await c.fix('我记得这件事'), '我记得这件事')
+  assert.equal(await c.fix('难得的机会'), '难得的机会')
+  assert.equal(await c.fix('标的很清楚'), '标的很清楚')
+  assert.equal(await c.fix('他赢得比赛'), '他赢得比赛')
+  assert.equal(await c.fix('他显得很累'), '他显得很累')
+})
+
+test('DER 解冻不重开历史误纠：赛亚饿的鸟飞的高', async () => {
+  // v0.1.1 邻居规则修复的锚点，解冻不能让「饿的」再变「饿得」
+  assert.equal(await c.fix('赛亚饿的鸟飞的高'), '赛亚饿的鸟飞得高')
+})
+
+// ────────────────────────────────────────────────────────────
+// F1 程度补语固定后缀 / F3 网络补语「X得一批」
+// ────────────────────────────────────────────────────────────
+test('F1：菜的离谱 / 萌的犯规呀 / 累的要死', async () => {
+  assert.equal(await c.fix('菜的离谱'), '菜得离谱')
+  assert.equal(await c.fix('萌的犯规呀'), '萌得犯规呀')
+  assert.equal(await c.fix('累的要死'), '累得要死')
+})
+
+test('F1 保护：字面义/正确文本不动', async () => {
+  assert.equal(await c.fix('这个菜的味道很离谱'), '这个菜的味道很离谱')
+  assert.equal(await c.fix('真的离谱'), '真的离谱')
+})
+
+test('F3：猛的一批 → 猛得一批', async () => {
+  assert.equal(await c.fix('猛的一批'), '猛得一批')
+})
+
+test('F3 保护：一批后接名词是字面义', async () => {
+  assert.equal(await c.fix('猛的一批货'), '猛的一批货')
+  assert.equal(await c.fix('他猛的一批操作'), '他猛的一批操作')
 })

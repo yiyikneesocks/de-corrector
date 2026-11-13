@@ -43,7 +43,11 @@ npm install @azulores/de-corrector
 
 | 选项 | 默认 | 说明 |
 |---|---|---|
-| `maxLength` | `500` | 超过此字符数的消息直接跳过（0 = 不限制） |
+| `maxLength` | `500` | **单块**上限（码点）；超长自动分块，不再整条丢弃（0 = 不限制） |
+| `maxTotalLength` | `2000` | 全文熔断上限，超出直接返回原文（0 = 不限制） |
+| `chunkTarget` | `300` | 分块目标大小；块越大上下文越好、块数越少 |
+| `maxChunks` | `4` | 最多推理块数；超出部分原样保留（不丢文本） |
+| `onChunk` | `null` | 分块回调 `(info) => {}`，`info = { total, chunks, processed, skipped }` |
 | `modelPath` | 内置模型 | 自定义 ONNX 路径 |
 | `debug` | `false` | 输出调试信息 |
 
@@ -106,7 +110,7 @@ const r = await c.check('他高兴的跑得很快')
 
 如果觉得重，可以考虑：
 - 只在需要时 `import()`（动态加载，不占启动时间）
-- 把 `maxLength` 设小一点（如 200），减少无效推理
+- 把 `maxLength` / `chunkTarget` 设小一点（如 200），减少单块推理开销
 
 ---
 
